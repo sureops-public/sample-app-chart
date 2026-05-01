@@ -1,0 +1,718 @@
+# Online Boutique — Google's reference microservices demo (11 services).
+# Source: https://github.com/GoogleCloudPlatform/microservices-demo
+#         release/kubernetes-manifests.yaml (v0.9.x)
+#
+# We embed the manifests inline (templated) rather than pulling the
+# upstream Kustomize so we can size pods aggressively for the beta
+# cluster and inject our per-customer namespace + labels.
+#
+# All 11 services share the same image tag (var .Values.onlineBoutique.imageTag).
+# Cluster's containerd cache is pre-pulled by the cloud-init bootstrap
+# so first deploy is sub-5min.
+#
+# Inter-service discovery: every service is reachable via its bare DNS
+# name within the same namespace (Kubernetes resolves `productcatalogservice`
+# to the in-namespace ClusterIP automatically), so we never need fully
+# qualified `.svc.cluster.local` here.
+#
+# Service-by-service summary (all in the customer namespace):
+#   - frontend (HTTP :8080 → Service :80) — entry point, routed by ingress
+#   - productcatalogservice    (gRPC :3550)
+#   - currencyservice          (gRPC :7000)
+#   - cartservice              (gRPC :7070)  → depends on redis-cart
+#   - recommendationservice    (gRPC :8080)  → depends on productcatalogservice
+#   - shippingservice          (gRPC :50051)
+#   - emailservice             (gRPC container :8080, Service exposes :5000)
+#   - checkoutservice          (gRPC :5050)  → depends on the above
+#   - paymentservice           (gRPC :50051)
+#   - adservice                (gRPC :9555)
+#   - redis-cart               (Redis :6379) — single replica, emptyDir cache
+
+{{- $ns := include "customer.namespace" . -}}
+{{- $labels := include "customer.labels" . -}}
+{{- $imageTag := .Values.onlineBoutique.imageTag -}}
+{{- $registry := .Values.onlineBoutique.registry -}}
+{{- $resources := .Values.resources -}}
+
+# =============================================================================
+# 1/11 — frontend (HTTP entry point)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/frontend:{{ $imageTag }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: PRODUCT_CATALOG_SERVICE_ADDR
+              value: "productcatalogservice:3550"
+            - name: CURRENCY_SERVICE_ADDR
+              value: "currencyservice:7000"
+            - name: CART_SERVICE_ADDR
+              value: "cartservice:7070"
+            - name: RECOMMENDATION_SERVICE_ADDR
+              value: "recommendationservice:8080"
+            - name: SHIPPING_SERVICE_ADDR
+              value: "shippingservice:50051"
+            - name: CHECKOUT_SERVICE_ADDR
+              value: "checkoutservice:5050"
+            - name: AD_SERVICE_ADDR
+              value: "adservice:9555"
+            - name: ENABLE_PROFILER
+              value: "0"
+          readinessProbe:
+            initialDelaySeconds: 10
+            httpGet:
+              path: /_healthz
+              port: 8080
+              httpHeaders:
+                - name: Cookie
+                  value: shop_session-id=x-readiness-probe
+          livenessProbe:
+            initialDelaySeconds: 10
+            httpGet:
+              path: /_healthz
+              port: 8080
+              httpHeaders:
+                - name: Cookie
+                  value: shop_session-id=x-liveness-probe
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+
+# =============================================================================
+# 2/11 — productcatalogservice
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: productcatalogservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-productcatalog
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: productcatalogservice
+  template:
+    metadata:
+      labels:
+        app: productcatalogservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/productcatalogservice:{{ $imageTag }}
+          ports:
+            - containerPort: 3550
+          env:
+            - name: PORT
+              value: "3550"
+            - name: DISABLE_PROFILER
+              value: "1"
+          readinessProbe:
+            grpc:
+              port: 3550
+          livenessProbe:
+            grpc:
+              port: 3550
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: productcatalogservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: productcatalogservice
+  ports:
+    - name: grpc
+      port: 3550
+      targetPort: 3550
+
+# =============================================================================
+# 3/11 — currencyservice
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: currencyservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-currency
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: currencyservice
+  template:
+    metadata:
+      labels:
+        app: currencyservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/currencyservice:{{ $imageTag }}
+          ports:
+            - name: grpc
+              containerPort: 7000
+          env:
+            - name: PORT
+              value: "7000"
+            - name: DISABLE_PROFILER
+              value: "1"
+          readinessProbe:
+            grpc:
+              port: 7000
+          livenessProbe:
+            grpc:
+              port: 7000
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: currencyservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: currencyservice
+  ports:
+    - name: grpc
+      port: 7000
+      targetPort: 7000
+
+# =============================================================================
+# 4/11 — cartservice (depends on redis-cart)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cartservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-cart
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cartservice
+  template:
+    metadata:
+      labels:
+        app: cartservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/cartservice:{{ $imageTag }}
+          ports:
+            - containerPort: 7070
+          env:
+            - name: REDIS_ADDR
+              value: "redis-cart:6379"
+          readinessProbe:
+            initialDelaySeconds: 15
+            grpc:
+              port: 7070
+          livenessProbe:
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            grpc:
+              port: 7070
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: cartservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: cartservice
+  ports:
+    - name: grpc
+      port: 7070
+      targetPort: 7070
+
+# =============================================================================
+# 5/11 — recommendationservice (depends on productcatalogservice)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: recommendationservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-recommendation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: recommendationservice
+  template:
+    metadata:
+      labels:
+        app: recommendationservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/recommendationservice:{{ $imageTag }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: PRODUCT_CATALOG_SERVICE_ADDR
+              value: "productcatalogservice:3550"
+            - name: DISABLE_PROFILER
+              value: "1"
+          readinessProbe:
+            periodSeconds: 5
+            grpc:
+              port: 8080
+          livenessProbe:
+            periodSeconds: 5
+            grpc:
+              port: 8080
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: recommendationservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: recommendationservice
+  ports:
+    - name: grpc
+      port: 8080
+      targetPort: 8080
+
+# =============================================================================
+# 6/11 — shippingservice
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shippingservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-shipping
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shippingservice
+  template:
+    metadata:
+      labels:
+        app: shippingservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/shippingservice:{{ $imageTag }}
+          ports:
+            - containerPort: 50051
+          env:
+            - name: PORT
+              value: "50051"
+            - name: DISABLE_PROFILER
+              value: "1"
+          readinessProbe:
+            periodSeconds: 5
+            grpc:
+              port: 50051
+          livenessProbe:
+            grpc:
+              port: 50051
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shippingservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: shippingservice
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+
+# =============================================================================
+# 7/11 — emailservice (container :8080, Service exposes :5000 — matches upstream
+#                      so checkoutservice's EMAIL_SERVICE_ADDR=emailservice:5000)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emailservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-email
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: emailservice
+  template:
+    metadata:
+      labels:
+        app: emailservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/emailservice:{{ $imageTag }}
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: DISABLE_PROFILER
+              value: "1"
+          readinessProbe:
+            periodSeconds: 5
+            grpc:
+              port: 8080
+          livenessProbe:
+            periodSeconds: 5
+            grpc:
+              port: 8080
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emailservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: emailservice
+  ports:
+    - name: grpc
+      port: 5000
+      targetPort: 8080
+
+# =============================================================================
+# 8/11 — checkoutservice (depends on productcatalog, shipping, payment, email,
+#                         currency, cart)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: checkoutservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-checkout
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: checkoutservice
+  template:
+    metadata:
+      labels:
+        app: checkoutservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/checkoutservice:{{ $imageTag }}
+          ports:
+            - containerPort: 5050
+          env:
+            - name: PORT
+              value: "5050"
+            - name: PRODUCT_CATALOG_SERVICE_ADDR
+              value: "productcatalogservice:3550"
+            - name: SHIPPING_SERVICE_ADDR
+              value: "shippingservice:50051"
+            - name: PAYMENT_SERVICE_ADDR
+              value: "paymentservice:50051"
+            - name: EMAIL_SERVICE_ADDR
+              value: "emailservice:5000"
+            - name: CURRENCY_SERVICE_ADDR
+              value: "currencyservice:7000"
+            - name: CART_SERVICE_ADDR
+              value: "cartservice:7070"
+          readinessProbe:
+            grpc:
+              port: 5050
+          livenessProbe:
+            grpc:
+              port: 5050
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: checkoutservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: checkoutservice
+  ports:
+    - name: grpc
+      port: 5050
+      targetPort: 5050
+
+# =============================================================================
+# 9/11 — paymentservice
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: paymentservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-payment
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: paymentservice
+  template:
+    metadata:
+      labels:
+        app: paymentservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/paymentservice:{{ $imageTag }}
+          ports:
+            - containerPort: 50051
+          env:
+            - name: PORT
+              value: "50051"
+            - name: DISABLE_PROFILER
+              value: "1"
+          readinessProbe:
+            grpc:
+              port: 50051
+          livenessProbe:
+            grpc:
+              port: 50051
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: paymentservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: paymentservice
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+
+# =============================================================================
+# 10/11 — adservice
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: adservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-ad
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: adservice
+  template:
+    metadata:
+      labels:
+        app: adservice
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: server
+          image: {{ $registry }}/adservice:{{ $imageTag }}
+          ports:
+            - containerPort: 9555
+          env:
+            - name: PORT
+              value: "9555"
+          readinessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            grpc:
+              port: 9555
+          livenessProbe:
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            grpc:
+              port: 9555
+          resources: {{- toYaml $resources | nindent 12 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: adservice
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: adservice
+  ports:
+    - name: grpc
+      port: 9555
+      targetPort: 9555
+
+# =============================================================================
+# 11/11 — redis-cart (cartservice's backing store; emptyDir on purpose — demo
+#                     state is ephemeral, namespace teardown wipes everything)
+# =============================================================================
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-cart
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+    sureops.ai/component: online-boutique-redis-cart
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-cart
+  template:
+    metadata:
+      labels:
+        app: redis-cart
+        {{- $labels | nindent 8 }}
+    spec:
+      containers:
+        - name: redis
+          image: redis:alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            periodSeconds: 5
+            tcpSocket:
+              port: 6379
+          livenessProbe:
+            periodSeconds: 5
+            tcpSocket:
+              port: 6379
+          volumeMounts:
+            - mountPath: /data
+              name: redis-data
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              memory: 192Mi
+      volumes:
+        - name: redis-data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-cart
+  namespace: {{ $ns }}
+  labels:
+    {{- $labels | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    app: redis-cart
+  ports:
+    - name: tcp-redis
+      port: 6379
+      targetPort: 6379

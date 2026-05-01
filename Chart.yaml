@@ -1,0 +1,23 @@
+apiVersion: v2
+name: sureops-customer-app
+description: |
+  Per-customer SAMPLE APPLICATION chart — Online Boutique (Google's
+  reference 11-service microservices demo).
+
+  Deployed by the customer-facing ArgoCD via an Application resource
+  the coordinator creates after the per-customer infra chart finishes
+  helm-installing. This is the ONLY chart deployed via ArgoCD for the
+  customer; everything else (per-namespace Prometheus, Loki, Promtail,
+  the 3 MCP servers, the customer's Alertmanager routing, etc.) stays
+  helm-installed by the coordinator out of the ``per-customer`` chart.
+
+  Why split: the demo's value prop includes "your sureops agents can
+  see and manage what's deployed via ArgoCD". Without this chart's
+  Application living in the customer's ArgoCD project, the customer's
+  ``mcp-for-argocd.list_applications`` returned empty and that promise
+  was a lie. Splitting OB out into an ArgoCD-managed chart makes the
+  promise real — agents can sync, rollback, and inspect the sample app
+  through the ArgoCD MCP just like they would in production.
+type: application
+version: 0.1.0
+appVersion: "0.9.0"
