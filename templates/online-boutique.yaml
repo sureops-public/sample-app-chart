@@ -256,21 +256,28 @@ spec:
         app: cartservice
         {{- $labels | nindent 8 }}
     spec:
+      volumes:
+        {{- include "customer.otelDotnetVolume" . | nindent 8 }}
+      initContainers:
+        {{- include "customer.otelDotnetInitContainer" . | nindent 8 }}
       containers:
         - name: server
           image: {{ $registry }}/cartservice:{{ $imageTag }}
           ports:
             - containerPort: 7070
+          volumeMounts:
+            {{- include "customer.otelDotnetVolumeMount" . | nindent 12 }}
           env:
             - name: REDIS_ADDR
               value: "redis-cart:6379"
             {{- include "customer.otelEnv" . | nindent 12 }}
+            {{- include "customer.otelDotnetEnv" . | nindent 12 }}
           readinessProbe:
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             grpc:
               port: 7070
           livenessProbe:
-            initialDelaySeconds: 15
+            initialDelaySeconds: 30
             periodSeconds: 10
             grpc:
               port: 7070
@@ -624,22 +631,29 @@ spec:
         app: adservice
         {{- $labels | nindent 8 }}
     spec:
+      volumes:
+        {{- include "customer.otelJavaVolume" . | nindent 8 }}
+      initContainers:
+        {{- include "customer.otelJavaInitContainer" . | nindent 8 }}
       containers:
         - name: server
           image: {{ $registry }}/adservice:{{ $imageTag }}
           ports:
             - containerPort: 9555
+          volumeMounts:
+            {{- include "customer.otelJavaVolumeMount" . | nindent 12 }}
           env:
             - name: PORT
               value: "9555"
             {{- include "customer.otelEnv" . | nindent 12 }}
+            {{- include "customer.otelJavaEnv" . | nindent 12 }}
           readinessProbe:
-            initialDelaySeconds: 20
+            initialDelaySeconds: 60
             periodSeconds: 15
             grpc:
               port: 9555
           livenessProbe:
-            initialDelaySeconds: 20
+            initialDelaySeconds: 60
             periodSeconds: 15
             grpc:
               port: 9555

@@ -67,3 +67,134 @@ no harm and the consistent shape makes per-service follow-up PRs simpler.
     fieldRef:
       fieldPath: metadata.labels['app']
 {{- end -}}
+
+{{/*
+Java agent extras for adservice. The OB chart has no source-side OTel for the
+Java service, so we inject the OpenTelemetry javaagent at pod startup via an
+initContainer that drops the jar into a shared emptyDir, then point JVM at it
+via JAVA_TOOL_OPTIONS. The agent reads the canonical OTLP env vars below — note
+COLLECTOR_SERVICE_ADDR (used by the Go/Python/Node services) is NOT honored
+by the agent; it needs OTEL_EXPORTER_OTLP_ENDPOINT.
+
+Three partials so each goes in the right slot of the Deployment spec:
+  - customer.otelJavaInitContainer → spec.template.spec.initContainers
+  - customer.otelJavaVolume        → spec.template.spec.volumes
+  - customer.otelJavaVolumeMount   → container.volumeMounts
+  - customer.otelJavaEnv           → container.env (additive on top of customer.otelEnv)
+
+Agent version is pinned to v2.10.0 — bump deliberately; auto-instrumentation
+behavior changes between minor versions. The download is cached on each pod
+start (no image rebuild), so updating the version is a chart-only change.
+
+Metrics + logs exporters are forced to "none" because:
+  - OB's adservice doesn't emit metrics worth keeping (gRPC server only)
+  - The per-customer collector's logs pipeline isn't wired (logs flow via Promtail)
+*/}}
+{{- define "customer.otelJavaInitContainer" -}}
+- name: install-otel-javaagent
+  image: busybox:1.36
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -eu
+      AGENT_VERSION=v2.10.0
+      AGENT_URL="https://github.com/open-telemetry/opentelemetry-java-instrumentation/releases/download/${AGENT_VERSION}/opentelemetry-javaagent.jar"
+      echo "Downloading OpenTelemetry javaagent ${AGENT_VERSION}..."
+      wget -q -O /otel/opentelemetry-javaagent.jar "${AGENT_URL}"
+      ls -la /otel/opentelemetry-javaagent.jar
+  volumeMounts:
+    - name: otel-agent
+      mountPath: /otel
+{{- end -}}
+
+{{- define "customer.otelJavaVolume" -}}
+- name: otel-agent
+  emptyDir: {}
+{{- end -}}
+
+{{- define "customer.otelJavaVolumeMount" -}}
+- name: otel-agent
+  mountPath: /otel
+  readOnly: true
+{{- end -}}
+
+{{- define "customer.otelJavaEnv" -}}
+- name: JAVA_TOOL_OPTIONS
+  value: "-javaagent:/otel/opentelemetry-javaagent.jar"
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: "http://otel-collector.{{ include "customer.namespace" . }}.svc.cluster.local:4317"
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: "grpc"
+- name: OTEL_METRICS_EXPORTER
+  value: "none"
+- name: OTEL_LOGS_EXPORTER
+  value: "none"
+{{- end -}}
+
+{{/*
+.NET auto-instrumentation for cartservice. Same shape as the Java agent
+partials: initContainer copies the auto-instrumentation files into a shared
+volume, then the main container loads the CLR profiler via env vars at startup.
+
+The `otel/autoinstrumentation-dotnet` image is published by the OpenTelemetry
+project; we use its `cp -a /autoinstrumentation/. /otel-auto-instrumentation/`
+entrypoint to populate the shared volume, then the .NET runtime in the main
+container picks up the profiler via CORECLR_* env vars. No image rebuild needed.
+
+Pinning the image tag to 1.10.0 — bump deliberately. The auto-instrumentation
+runtime is sensitive to .NET version compatibility; cartservice runs .NET 8 in
+the upstream OB image (gcr.io/google-samples/microservices-demo/cartservice:v0.9.0).
+
+Same metrics/logs exporter discipline as the Java agent — only traces flow
+through the per-customer collector pipeline today.
+*/}}
+{{- define "customer.otelDotnetInitContainer" -}}
+- name: install-otel-dotnet
+  image: otel/autoinstrumentation-dotnet:1.10.0
+  command:
+    - /bin/sh
+    - -c
+    - cp -a /autoinstrumentation/. /otel-auto-instrumentation/
+  volumeMounts:
+    - name: otel-dotnet-auto
+      mountPath: /otel-auto-instrumentation
+{{- end -}}
+
+{{- define "customer.otelDotnetVolume" -}}
+- name: otel-dotnet-auto
+  emptyDir: {}
+{{- end -}}
+
+{{- define "customer.otelDotnetVolumeMount" -}}
+- name: otel-dotnet-auto
+  mountPath: /otel-auto-instrumentation
+  readOnly: true
+{{- end -}}
+
+{{- define "customer.otelDotnetEnv" -}}
+- name: CORECLR_ENABLE_PROFILING
+  value: "1"
+- name: CORECLR_PROFILER
+  value: "{918728DD-259F-4A6A-AC2B-B85E1B658318}"
+- name: CORECLR_PROFILER_PATH
+  value: "/otel-auto-instrumentation/linux-x64/OpenTelemetry.AutoInstrumentation.Native.so"
+- name: DOTNET_ADDITIONAL_DEPS
+  value: "/otel-auto-instrumentation/AdditionalDeps"
+- name: DOTNET_SHARED_STORE
+  value: "/otel-auto-instrumentation/store"
+- name: DOTNET_STARTUP_HOOKS
+  value: "/otel-auto-instrumentation/net/OpenTelemetry.AutoInstrumentation.StartupHook.dll"
+- name: OTEL_DOTNET_AUTO_HOME
+  value: "/otel-auto-instrumentation"
+- name: OTEL_DOTNET_AUTO_PLUGINS
+  value: ""
+- name: OTEL_EXPORTER_OTLP_ENDPOINT
+  value: "http://otel-collector.{{ include "customer.namespace" . }}.svc.cluster.local:4317"
+- name: OTEL_EXPORTER_OTLP_PROTOCOL
+  value: "grpc"
+- name: OTEL_METRICS_EXPORTER
+  value: "none"
+- name: OTEL_LOGS_EXPORTER
+  value: "none"
+{{- end -}}
