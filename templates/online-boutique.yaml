@@ -81,6 +81,7 @@ spec:
               value: "adservice:9555"
             - name: ENABLE_PROFILER
               value: "0"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             initialDelaySeconds: 10
             httpGet:
@@ -148,6 +149,7 @@ spec:
               value: "3550"
             - name: DISABLE_PROFILER
               value: "1"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             grpc:
               port: 3550
@@ -206,6 +208,7 @@ spec:
               value: "7000"
             - name: DISABLE_PROFILER
               value: "1"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             grpc:
               port: 7000
@@ -261,6 +264,7 @@ spec:
           env:
             - name: REDIS_ADDR
               value: "redis-cart:6379"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             initialDelaySeconds: 15
             grpc:
@@ -323,6 +327,7 @@ spec:
               value: "productcatalogservice:3550"
             - name: DISABLE_PROFILER
               value: "1"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             periodSeconds: 5
             grpc:
@@ -382,6 +387,7 @@ spec:
               value: "50051"
             - name: DISABLE_PROFILER
               value: "1"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             periodSeconds: 5
             grpc:
@@ -441,6 +447,7 @@ spec:
               value: "8080"
             - name: DISABLE_PROFILER
               value: "1"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             periodSeconds: 5
             grpc:
@@ -511,6 +518,7 @@ spec:
               value: "currencyservice:7000"
             - name: CART_SERVICE_ADDR
               value: "cartservice:7070"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             grpc:
               port: 5050
@@ -568,6 +576,7 @@ spec:
               value: "50051"
             - name: DISABLE_PROFILER
               value: "1"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             grpc:
               port: 50051
@@ -623,6 +632,7 @@ spec:
           env:
             - name: PORT
               value: "9555"
+            {{- include "customer.otelEnv" . | nindent 12 }}
           readinessProbe:
             initialDelaySeconds: 20
             periodSeconds: 15
