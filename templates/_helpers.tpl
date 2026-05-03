@@ -186,7 +186,13 @@ through the per-customer collector pipeline today.
 - name: CORECLR_PROFILER
   value: "{918728DD-259F-4A6A-AC2B-B85E1B658318}"
 - name: CORECLR_PROFILER_PATH
-  value: "/otel-auto-instrumentation/linux-x64/OpenTelemetry.AutoInstrumentation.Native.so"
+  # OB's cartservice image is Alpine 3.18 (musl libc), confirmed live by
+  # ldd → /lib/ld-musl-x86_64.so.1. Pointing at the glibc binary
+  # (linux-x64/OpenTelemetry.AutoInstrumentation.Native.so) makes the
+  # profiler load fail silently — the runtime can't resolve glibc symbols
+  # against musl, so it skips loading and the .NET app starts without
+  # instrumentation. linux-musl-x64 is the correct variant for Alpine.
+  value: "/otel-auto-instrumentation/linux-musl-x64/OpenTelemetry.AutoInstrumentation.Native.so"
 - name: DOTNET_ADDITIONAL_DEPS
   value: "/otel-auto-instrumentation/AdditionalDeps"
 - name: DOTNET_SHARED_STORE
