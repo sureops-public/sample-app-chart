@@ -173,6 +173,14 @@ through the per-customer collector pipeline today.
 {{- end -}}
 
 {{- define "customer.otelDotnetEnv" -}}
+# OB's cartservice base image pins ``DOTNET_EnableDiagnostics=0`` (smaller
+# startup, no Diagnostic Hub). The CLR runtime treats that as a hard kill
+# switch for ALL diagnostics including profilers — CORECLR_ENABLE_PROFILING=1
+# becomes a no-op and the OTel CLR profiler never loads. Override back to 1
+# so the auto-instrumentation can attach. Verified live on the dogfood stack:
+# without this, cartservice serves traffic but emits zero spans.
+- name: DOTNET_EnableDiagnostics
+  value: "1"
 - name: CORECLR_ENABLE_PROFILING
   value: "1"
 - name: CORECLR_PROFILER
