@@ -272,15 +272,31 @@ spec:
               value: "redis-cart:6379"
             {{- include "customer.otelEnv" . | nindent 12 }}
             {{- include "customer.otelDotnetEnv" . | nindent 12 }}
+          # cartservice now starts the .NET CLR with the OTel
+          # auto-instrumentation profiler attached (see customer.otelDotnetEnv).
+          # Profiler load + IL rewriting on first method calls adds 15-30s
+          # to the existing .NET startup, so the previous
+          # ``initialDelaySeconds: 30`` is marginal — sometimes the gRPC
+          # listener is up in time, sometimes not, and the frontend's gRPC
+          # client cache surfaces transient "connection refused" errors on
+          # the first page load (homeHandler → cartservice).
+          #
+          # startupProbe gates liveness+readiness for up to 2 minutes
+          # (24 × 5s). Once it passes once, K8s switches to the regular
+          # liveness/readiness cadence with no initial delay needed.
+          startupProbe:
+            grpc:
+              port: 7070
+            periodSeconds: 5
+            failureThreshold: 24
           readinessProbe:
-            initialDelaySeconds: 30
             grpc:
               port: 7070
+            periodSeconds: 5
           livenessProbe:
-            initialDelaySeconds: 30
-            periodSeconds: 10
             grpc:
               port: 7070
+            periodSeconds: 10
           resources: {{- toYaml $resources | nindent 12 }}
 ---
 apiVersion: v1
